@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import "./App.css";
 
-import { providers, utils, BigNumber } from "ethers";
+import { providers, utils, constants, BigNumber } from "ethers";
+
 // L1 provider
 const mainnetProvider = new providers.JsonRpcProvider(
   import.meta.env.VITE_MAINNET_NODE_RPC_URL
@@ -24,6 +25,7 @@ const opSepoliaProvider = new providers.JsonRpcProvider(
   import.meta.env.VITE_OP_SEPOLIA_NODE_RPC_URL
 );
 
+// Util: Transfer from BigNumber to Float by decimals
 export const bigNumberToFloat = (
   bigNumberValue: BigNumber,
   decimals: number
@@ -38,15 +40,31 @@ export const bigNumberToFloat = (
   return integerPart.toNumber() + floatPart;
 };
 
+// Util: Format BigNumber to String with comma
 const formatBigNumber = (value: BigNumber): string => {
   return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 };
 
+// Util: BigNumber replacer for JSON stringify
+const bigNumberReplacer = (_: string, value: any) => {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    value.type === "BigNumber" &&
+    value.hex
+  ) {
+    return BigNumber.from(value.hex).toString();
+  }
+  return value;
+};
+
+// React: Function component
 function App() {
   const [txHashOnArbitrumSepolia, setTXHashOnArbitrumSepolia] =
     useState<string>(
       `0x266a3ab9dabeaa008f09ee7b791d35f192d51958e40688104cc58eb93e72fdf3`
     );
+  const [txDataLength, setTxDataLength] = useState<number>(0);
   const [gasUsedForL2, setGasUsedForL2] = useState<BigNumber>(
     BigNumber.from(0)
   );
@@ -56,7 +74,7 @@ function App() {
   const [baseFeeOnMainnet, setBaseFeeOnMainnet] = useState<BigNumber>(
     BigNumber.from(0)
   );
-  const [gasPriceOnArb, setGasPriceOnArb] = useState<BigNumber>(
+  const [baseFeeOnArb, setBaseFeeOnArb] = useState<BigNumber>(
     BigNumber.from(0)
   );
   const [errorMsg, setErrorMsg] = useState<string>(``);
@@ -70,9 +88,9 @@ function App() {
           txHashOnArbitrumSepolia
         );
 
-        const txFrom = txOnArbitrumSepolia.from;
-        const txTo = txOnArbitrumSepolia.to;
-        const txData = txOnArbitrumSepolia.data;
+        const txFrom = txOnArbitrumSepolia.from || constants.AddressZero;
+        const txTo = txOnArbitrumSepolia.to || constants.AddressZero;
+        const txData = txOnArbitrumSepolia.data || utils.hexlify("0x");
 
         // Calculate gas used for l2
         const gasUsedForL2 = await arbProvider.estimateGas({
@@ -84,6 +102,7 @@ function App() {
 
         // Get TX data length
         const txDataLength = utils.hexDataLength(txData);
+        setTxDataLength(txDataLength);
 
         // Get base fee on Mainnet
         const baseFeeOnL1Mainnet =
@@ -91,14 +110,22 @@ function App() {
           BigNumber.from(0);
         setBaseFeeOnMainnet(baseFeeOnL1Mainnet);
 
-        // Get gas price on Arbitrum
-        const gasPriceOnL2Arb =
-          (await arbProvider.getFeeData()).gasPrice || BigNumber.from(0);
-        setGasPriceOnArb(gasPriceOnL2Arb);
+        // Get base fee on Arbitrum
+        const feeDataOnL2Arb = await arbProvider.getFeeData();
+        console.log(
+          `feeDataOnL2Arb: ${JSON.stringify(
+            feeDataOnL2Arb,
+            bigNumberReplacer,
+            2
+          )}`
+        );
+        const baseFeeOnL2Arb =
+          feeDataOnL2Arb.lastBaseFeePerGas || BigNumber.from(0);
+        setBaseFeeOnArb(baseFeeOnL2Arb);
 
         // Calculate gas used for l1
         const gasUsedForL1Mainnet = baseFeeOnL1Mainnet
-          .div(gasPriceOnL2Arb)
+          .div(baseFeeOnL2Arb)
           .mul(txDataLength);
         setGasUsedForL1(gasUsedForL1Mainnet);
       } catch (error) {
@@ -114,7 +141,7 @@ function App() {
 
   return (
     <>
-      <h1>Vite + React</h1>
+      <h1>Estimate Arbitrum Fee from Arbitrum Sepolia TX</h1>
       <div className="card">
         <label>
           TX hash on Arbitrum Sepolia:{" "}
@@ -139,29 +166,39 @@ function App() {
 
       <div className="card">
         <div>
+          TX data length: <span>{txDataLength} Bytes</span>
+        </div>
+        <div>
+          Base fee on L1: <span>{formatBigNumber(baseFeeOnMainnet)} WEI</span>
+        </div>
+        <div>
+          Base fee on L2: <span>{formatBigNumber(baseFeeOnArb)} WEI</span>
+        </div>
+
+        <div>
+          Gas used for L1 (= TX data length * ( Base fee on L1 / Base fee on L2
+          )): <span>{formatBigNumber(gasUsedForL1)}</span>
+        </div>
+        <div>
           Gas used for L2: <span>{formatBigNumber(gasUsedForL2)}</span>
         </div>
         <div>
-          Gas used for L1: <span>{formatBigNumber(gasUsedForL1)}</span>
-        </div>
-        <div>
-          Gas used (= Gas used for L2 + Gas used for L1):{" "}
+          Gas limit (= Gas used for L1 + Gas used for L2):{" "}
           <span>{formatBigNumber(gasUsedForL2.add(gasUsedForL1))}</span>
         </div>
+
         <div>
-          Base fee on Mainnet: <span>{formatBigNumber(baseFeeOnMainnet)}</span>
-        </div>
-        <div>
-          Gas price on Arbitrum:{" "}
-          <span>{formatBigNumber(gasPriceOnArb)} WEI</span>
-        </div>
-        <div>
-          Estimate TX fee (= Gas used * Gas price):{" "}
+          Estimate TX fee (= Gas limit * Double base fee):{" "}
           <span>
-            {formatBigNumber(gasUsedForL2.add(gasUsedForL1).mul(gasPriceOnArb))}{" "}
-            WEI ={" "}
+            {formatBigNumber(
+              gasUsedForL2.add(gasUsedForL1).mul(baseFeeOnArb).mul(2)
+            )}{" "}
+            WEI
+          </span>
+          <span style={{ color: "gold" }}>
+            ={" "}
             {bigNumberToFloat(
-              gasUsedForL2.add(gasUsedForL1).mul(gasPriceOnArb),
+              gasUsedForL2.add(gasUsedForL1).mul(baseFeeOnArb).mul(2),
               18
             ).toString()}{" "}
             ETH
